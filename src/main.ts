@@ -10,17 +10,32 @@ import {
   ImuReportPace,
 } from '@evenrealities/even_hub_sdk'
 import { HeadTracker } from './tracker'
-import { ROUTINE, HOLD_MS, TARGET_RADIUS, targetOf, type Exercise } from './routine'
-import { renderGauge } from './render'
+import { ROUTINE, HOLD_MS, TARGET_RADIUS, FLASH_MS, targetOf, arrowOf, type Exercise } from './routine'
+import { renderGauge, renderSideJa, renderSideTextJa } from './render'
 
-const SIM = new URLSearchParams(location.search).has('sim')
-const DEBUG = new URLSearchParams(location.search).has('debug')
+const params = new URLSearchParams(location.search)
+const SIM = params.has('sim')
+const DEBUG = params.has('debug')
+// Firmware font has no CJK glyphs — Japanese goes through the image pipeline.
+const JA = (params.get('lang') ?? navigator.language).startsWith('ja')
 
 const bridge = await waitForEvenAppBridge()
 const tracker = new HeadTracker()
 
-// ── Page layout ──────────────────────────────────────────────────────
-// zOrder omitted on purpose: declaration order stacks, event layer first.
+const S = {
+  title: 'Neck Stretch',
+  introLines: JA
+    ? ['首ストレッチ 7種目', 'ドットをリングに', '合わせてキープ', '痛みがあれば中止', '', 'タップで開始']
+    : ['7 guided neck stretches.', 'Follow the dot into the ring', 'and hold. Stop if it hurts.', '', 'Tap to start'],
+  calibrating: JA ? 'まっすぐ向いて静止\n補正中…' : 'Sit straight, look ahead.\nCalibrating…',
+  doneLines: JA ? ['完了!', '首リセット終了', '', 'タップでもう一度'] : ['All done!', 'Neck reset complete.', '', 'Tap to run again'],
+  tapStart: 'tap start · hold temple recalibrate · 2tap exit',
+  tapSkip: 'tap skip · hold temple recalibrate · 2tap exit',
+  tapRestart: 'tap restart · 2tap exit',
+  noImu: 'no IMU data — check glasses connection',
+}
+
+// ── Page layout (declaration order stacks; event layer first) ─────────
 const eventLayer = new TextContainerProperty({
   xPosition: 0, yPosition: 0, width: 576, height: 288,
   borderWidth: 0, borderColor: 0, paddingLength: 0,
@@ -33,42 +48,55 @@ const header = new TextContainerProperty({
   containerID: 2, containerName: 'header', content: '', isEventCapture: 0,
 })
 const gauge = new ImageContainerProperty({
-  xPosition: 20, yPosition: 60, width: 220, height: 140,
+  xPosition: 12, yPosition: 56, width: 288, height: 144,
   containerID: 3, containerName: 'gauge',
 })
-const side = new TextContainerProperty({
-  xPosition: 262, yPosition: 52, width: 300, height: 160,
+// EN: text container for the side panel. JA: image container (CJK-safe).
+const sideText = new TextContainerProperty({
+  xPosition: 316, yPosition: 52, width: 256, height: 180,
   borderWidth: 0, borderColor: 5, paddingLength: 4,
   containerID: 4, containerName: 'side', content: '', isEventCapture: 0,
+})
+const sideImage = new ImageContainerProperty({
+  xPosition: 296, yPosition: 52, width: 272, height: 144,
+  containerID: 5, containerName: 'sideImg',
 })
 const footer = new TextContainerProperty({
   xPosition: 0, yPosition: 258, width: 576, height: 30,
   borderWidth: 0, borderColor: 5, paddingLength: 4,
-  containerID: 5, containerName: 'footer', content: '', isEventCapture: 0,
-  textColor: 1, // dim: hints shouldn't compete with the exercise text
+  containerID: 6, containerName: 'footer', content: '', isEventCapture: 0,
+  textColor: 1,
 })
 const dbg = new TextContainerProperty({
-  xPosition: 262, yPosition: 196, width: 300, height: 60,
+  xPosition: 316, yPosition: 214, width: 256, height: 44,
   borderWidth: 0, borderColor: 5, paddingLength: 2,
-  containerID: 6, containerName: 'dbg', content: '', isEventCapture: 0,
+  containerID: 7, containerName: 'dbg', content: '', isEventCapture: 0,
   textColor: 1,
 })
 
-const texts = [eventLayer, header, side, footer, ...(DEBUG ? [dbg] : [])]
+const textObjects = [
+  eventLayer,
+  header,
+  ...(JA ? [] : [sideText]),
+  ...(JA ? [] : [footer]),
+  ...(DEBUG ? [dbg] : []),
+]
+const imageObjects = [gauge, ...(JA ? [sideImage] : [])]
+
 const created = await bridge.createStartUpPageContainer(
   new CreateStartUpPageContainer({
-    containerTotalNum: texts.length + 1,
-    textObject: texts,
-    imageObject: [gauge],
+    containerTotalNum: textObjects.length + imageObjects.length,
+    textObject: textObjects,
+    imageObject: imageObjects,
   }),
 )
 if (created !== 0) {
   // HMR reload leaves a live page behind; take it over with a rebuild.
   const rebuilt = await bridge.rebuildPageContainer(
     new RebuildPageContainer({
-      containerTotalNum: texts.length + 1,
-      textObject: texts,
-      imageObject: [gauge],
+      containerTotalNum: textObjects.length + imageObjects.length,
+      textObject: textObjects,
+      imageObject: imageObjects,
     }),
   )
   if (!rebuilt) {
@@ -84,67 +112,76 @@ const textCache = new Map<string, string>()
 async function setText(name: 'header' | 'side' | 'footer' | 'dbg', content: string) {
   if (textCache.get(name) === content) return
   textCache.set(name, content)
-  const id = { header: 2, side: 4, footer: 5, dbg: 6 }[name]
+  const id = { header: 2, side: 4, footer: 6, dbg: 7 }[name]
   await bridge.textContainerUpgrade(
     new TextContainerUpgrade({ containerID: id, containerName: name, content }),
   )
 }
 
-// Image sends are serialized; the SDK paces them at ~100ms internally.
+// All image sends share one serialized queue (no concurrent sends).
 let rendering: Promise<unknown> = Promise.resolve()
-function pushGauge(u: number, v: number, target: { u: number; v: number } | undefined, progress: number) {
+function pushImage(id: number, name: string, make: () => Promise<Uint8Array>) {
   rendering = rendering.then(async () => {
-    const bytes = await renderGauge({
-      u, v,
-      target: target ? { ...target, r: TARGET_RADIUS } : undefined,
-      progress,
-      calibrated: tracker.calibrated,
-    })
     const res = await bridge.updateImageRawData(
-      new ImageRawDataUpdate({ containerID: 3, containerName: 'gauge', imageData: bytes }),
+      new ImageRawDataUpdate({ containerID: id, containerName: name, imageData: await make() }),
     )
-    if (res !== 'success') console.error('updateImageRawData:', res)
+    if (res !== 'success') console.error('updateImageRawData:', name, res)
   })
+}
+function pushGauge(u: number, v: number, target: { u: number; v: number } | undefined, progress: number, flash: boolean) {
+  pushImage(3, 'gauge', () =>
+    renderGauge({ u, v, target: target ? { ...target, r: TARGET_RADIUS } : undefined, progress, calibrated: tracker.calibrated, flash }),
+  )
 }
 
 // ── State machine ────────────────────────────────────────────────────
-type State = 'intro' | 'calibrating' | 'exercise' | 'finished'
+type State = 'intro' | 'calibrating' | 'exercise' | 'flash' | 'finished'
 let state: State = 'intro'
 let step = 0
 let heldMs = 0
 let calibrateUntil = 0
+let flashUntil = 0
 
 function bar(frac: number): string {
   const n = Math.round(Math.max(0, Math.min(1, frac)) * 10)
-  return `[${'#'.repeat(n)}${'-'.repeat(10 - n)}]`
+  return '█'.repeat(n) + '─'.repeat(10 - n)
 }
-
+function dots(): string {
+  return '●'.repeat(state === 'finished' ? ROUTINE.length : step) + '○'.repeat(ROUTINE.length - (state === 'finished' ? ROUTINE.length : step))
+}
 function exercise(): Exercise {
   return ROUTINE[step]
 }
+function exLabel(ex: Exercise): string {
+  return JA ? ex.labelJa : ex.label
+}
+function exHint(ex: Exercise): string {
+  return JA ? ex.hintJa : ex.hint
+}
 
 function refreshStaticText() {
+  setText('header', `${S.title}   ${dots()}`)
+  if (JA) {
+    // side image is rendered per-tick below; nothing else to push here
+    return
+  }
   if (state === 'intro') {
-    setText('header', 'Neck Stretch')
-    setText('side', '6 guided neck stretches.\nFollow the dot into the ring\nand hold.\n\nTap to start')
-    setText('footer', 'tap start · hold temple recalibrate · 2tap exit')
+    setText('side', S.introLines.join('\n'))
+    setText('footer', S.tapStart)
   } else if (state === 'calibrating') {
-    setText('header', `Neck Stretch · ${step + 1}/${ROUTINE.length}`)
-    setText('side', 'Sit straight, look ahead.\nCalibrating…')
-  } else if (state === 'exercise') {
+    setText('side', S.calibrating)
+  } else if (state === 'exercise' || state === 'flash') {
     const ex = exercise()
-    setText('header', `Neck Stretch · ${step + 1}/${ROUTINE.length}`)
-    setText('side', `${ex.label}\n${ex.hint}`)
-    setText('footer', 'tap skip · hold temple recalibrate · 2tap exit')
+    setText('side', `${arrowOf(ex)} ${ex.label}\n${ex.hint}`)
+    setText('footer', S.tapSkip)
   } else {
-    setText('header', 'Neck Stretch')
-    setText('side', 'All done!\nNeck reset complete.\n\nTap to run again')
-    setText('footer', 'tap restart · 2tap exit')
+    setText('side', S.doneLines.join('\n'))
+    setText('footer', S.tapRestart)
   }
 }
 
 function gaugePosition(): { u: number; v: number } {
-  const ex = state === 'exercise' ? exercise() : undefined
+  const ex = state === 'exercise' || state === 'flash' ? exercise() : undefined
   const lateral = ex && ex.measure !== 'pitch' ? ex.measure : 'yaw'
   return { u: tracker.axisValue(lateral as 'yaw' | 'roll'), v: tracker.axisValue('pitch') }
 }
@@ -154,8 +191,6 @@ if (!SIM) {
   const ok = await bridge.imuControl(true, ImuReportPace.P200)
   console.log('imuControl:', ok)
 }
-
-// Sim mode: pointer position over the webview is the head pose.
 if (SIM) {
   window.addEventListener('pointermove', e => {
     const u = (e.clientX / window.innerWidth) * 2.4 - 1.2
@@ -164,7 +199,7 @@ if (SIM) {
   })
 }
 
-// ── Event handling (template pattern) ────────────────────────────────
+// ── Event handling ───────────────────────────────────────────────────
 function eventTypeOf(envelope?: { eventType?: OsEventTypeList }): OsEventTypeList | null {
   if (!envelope) return null
   return envelope.eventType ?? OsEventTypeList.CLICK_EVENT
@@ -178,21 +213,8 @@ function cleanup() {
   if (!SIM) bridge.imuControl(false)
 }
 
-function onTap() {
-  if (state === 'intro') {
-    beginCalibration()
-  } else if (state === 'exercise') {
-    nextExercise()
-  } else if (state === 'finished') {
-    step = 0
-    heldMs = 0
-    state = 'intro'
-    refreshStaticText()
-  }
-}
-
 function beginCalibration() {
-  tracker.calibrate() // instant in sim; on hardware re-sampled below
+  tracker.calibrate()
   calibrateUntil = Date.now() + (SIM ? 0 : 1200)
   state = 'calibrating'
   heldMs = 0
@@ -208,6 +230,17 @@ function nextExercise() {
     state = 'exercise'
   }
   refreshStaticText()
+}
+
+function onTap() {
+  if (state === 'intro') beginCalibration()
+  else if (state === 'exercise' || state === 'flash') nextExercise()
+  else if (state === 'finished') {
+    step = 0
+    heldMs = 0
+    state = 'intro'
+    refreshStaticText()
+  }
 }
 
 const unsubscribe = bridge.onEvenHubEvent(event => {
@@ -241,6 +274,7 @@ window.addEventListener('beforeunload', cleanup)
 // ── Main loop ────────────────────────────────────────────────────────
 refreshStaticText()
 let lastTick = Date.now()
+let lastSidePush = 0
 
 setInterval(() => {
   const now = Date.now()
@@ -252,6 +286,7 @@ setInterval(() => {
     state = 'exercise'
     refreshStaticText()
   }
+  if (state === 'flash' && now >= flashUntil) nextExercise()
 
   let progress = 0
   if (state === 'exercise') {
@@ -261,19 +296,52 @@ setInterval(() => {
     heldMs = dist <= TARGET_RADIUS ? heldMs + dt : Math.max(0, heldMs - dt * 2)
     progress = Math.min(1, heldMs / HOLD_MS)
 
+    const secsLeft = Math.ceil((HOLD_MS - heldMs) / 1000)
     const ex = exercise()
-    setText('side', `${ex.label}\n${ex.hint}\n\n${bar(progress)} ${Math.ceil((HOLD_MS - heldMs) / 1000)}s`)
-
-    if (heldMs >= HOLD_MS) nextExercise()
+    if (!JA) {
+      setText('side', `${arrowOf(ex)} ${ex.label}\n${ex.hint}\n\n${bar(progress)} ${secsLeft}s`)
+    }
+    if (heldMs >= HOLD_MS) {
+      state = 'flash'
+      flashUntil = now + FLASH_MS
+      refreshStaticText()
+    }
   }
 
   if (!SIM && !DEBUG && tracker.samples === 0 && state !== 'intro') {
-    setText('footer', 'no IMU data — check glasses connection')
+    setText('footer', S.noImu)
   }
 
   const { u, v } = gaugePosition()
-  const target = state === 'exercise' ? targetOf(exercise()) : undefined
-  pushGauge(u, v, target, progress)
+  const target = state === 'exercise' || state === 'flash' ? targetOf(exercise()) : undefined
+  pushGauge(u, v, target, progress, state === 'flash')
+
+  // JA side image: throttle to ~3 fps; static states only on change.
+  if (JA && now - lastSidePush > 350) {
+    lastSidePush = now
+    if (state === 'exercise' || state === 'flash') {
+      const ex = exercise()
+      const secsLeft = Math.ceil((HOLD_MS - heldMs) / 1000)
+      pushImage(5, 'sideImg', () =>
+        renderSideJa({
+          title: exLabel(ex),
+          hint: exHint(ex),
+          arrow: arrowOf(ex),
+          progress,
+          secondsLeft: secsLeft,
+          flash: state === 'flash',
+        }),
+      )
+    } else {
+      const lines =
+        state === 'intro'
+          ? S.introLines.map(t => ({ text: t }))
+          : state === 'calibrating'
+            ? S.calibrating.split('\n').map(t => ({ text: t }))
+            : S.doneLines.map(t => ({ text: t }))
+      pushImage(5, 'sideImg', () => renderSideTextJa(lines))
+    }
+  }
 
   if (DEBUG) setText('dbg', tracker.debugText())
 }, 120)
@@ -288,7 +356,8 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
         : ''}
     </p>
     ${SIM ? '<p style="color:#6a6;font-size:13px;">Pointer X = turn/tilt · Pointer Y = look up/down</p>' : ''}
+    <p style="color:#555;font-size:12px;">lang: ${JA ? 'ja' : 'en'} (override with ?lang=ja / ?lang=en)</p>
   </main>
 `
 
-console.log('[neck-stretch] ready', SIM ? '(sim)' : '')
+console.log('[neck-stretch] ready', SIM ? '(sim)' : '', JA ? '(ja)' : '(en)')

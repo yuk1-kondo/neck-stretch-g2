@@ -2,13 +2,25 @@
 
 Guided neck-stretch coach for Even G2. The IMU tracks head pose: a dot on
 the glasses display mirrors your head — steer it into the target ring and
-hold 5 s per exercise. 6 exercises (up, down, tilt L/R, turn L/R).
+hold. 7 exercises: look up/down, tilt L/R, turn L/R, and a chin-tuck
+finisher (the highest-evidence drill for forward-head posture).
+
+English & Japanese UI — Japanese is rasterized through the image
+pipeline because the firmware font has no CJK glyphs.
 
 | Intro | Exercise |
 |---|---|
 | ![intro](docs/screenshot-intro.png) | ![exercise](docs/screenshot-exercise.png) |
 
 Rendered on the Even Hub simulator (no hardware required for layout/logic).
+
+## Stretch parameters (evidence-based)
+
+- **15 s holds** — the PT/ACSM consensus for static stretching is 15–30 s
+- **Gentle targets** — ~60–70% of comfortable ROM, not end range
+- **Chin tuck finisher** — hold still at center; the most-cited corrective
+  drill for tech neck (verified as "no rotation" since the IMU can't
+  see translation)
 
 ## Run
 
@@ -18,9 +30,10 @@ npm run dev
 ```
 
 Then either:
-- **Simulator:** `evenhub-simulator "http://localhost:5173?sim=1&debug=1"`
+- **Simulator:** `evenhub-simulator "http://localhost:5173?sim=1"`
   - `?sim=1` — pointer position in the webview drives the head dot
     (the simulator does not emulate the IMU)
+  - `?lang=ja` / `?lang=en` — force UI language (default: browser locale)
   - `?debug=1` — shows raw/delta IMU values on the glasses screen
 - **Real glasses:** `npx evenhub qr --url http://<your-ip>:5173?debug=1`
   and scan with the Even Hub companion app.
@@ -42,7 +55,8 @@ swings. Then adjust in `src/tracker.ts`:
 - `AXES` — which raw component is pitch / yaw / roll, and its sign
 - `MODE` — `'attitude'` if values hold while you hold a pose,
   `'gyro'` if they snap back to ~0 when you stop
-- `RANGE` — how much motion counts as "at target"
+- `RANGE` — how much motion counts as "at target" (aim for ~30–40°
+  deflection at the ring edge)
 
 ## Pack for distribution
 
@@ -54,8 +68,9 @@ npm run pack   # build + .ehpk
 
 | File | Purpose |
 |---|---|
-| `src/main.ts` | State machine, page layout, event routing |
+| `src/main.ts` | State machine, page layout, event routing, EN/JA switching |
 | `src/tracker.ts` | IMU smoothing + baseline + axis mapping |
-| `src/routine.ts` | Exercise list and gauge targets |
-| `src/render.ts` | Gauge canvas → PNG for `updateImageRawData` |
+| `src/routine.ts` | Exercise list, targets, hold parameters |
+| `src/render.ts` | Gauge + Japanese panels → PNG for `updateImageRawData` |
 | `app.json` | Manifest (`com.yukik.neckstretch`) |
+| `PITCH.md` | ERDN pitch notes |
