@@ -8,9 +8,9 @@ finisher (the highest-evidence drill for forward-head posture).
 English & Japanese UI — Japanese is rasterized through the image
 pipeline because the firmware font has no CJK glyphs.
 
-| Intro | Exercise |
-|---|---|
-| ![intro](docs/screenshot-intro.png) | ![exercise](docs/screenshot-exercise.png) |
+| EN intro | EN exercise | JA exercise |
+|---|---|---|
+| ![intro](docs/screenshot-intro.png) | ![exercise](docs/screenshot-exercise.png) | ![exercise-ja](docs/screenshot-exercise-ja.png) |
 
 Rendered on the Even Hub simulator (no hardware required for layout/logic).
 
