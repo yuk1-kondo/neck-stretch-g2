@@ -15,6 +15,7 @@ import { renderGauge, renderSideJa, renderSideTextJa } from './render'
 
 const params = new URLSearchParams(location.search)
 const SIM = params.has('sim')
+const AUTO = params.has('auto') // hands-free demo: head drifts to the target
 const DEBUG = params.has('debug')
 // Firmware font has no CJK glyphs — Japanese goes through the image pipeline.
 const JA = (params.get('lang') ?? navigator.language).startsWith('ja')
@@ -142,10 +143,6 @@ let heldMs = 0
 let calibrateUntil = 0
 let flashUntil = 0
 
-function bar(frac: number): string {
-  const n = Math.round(Math.max(0, Math.min(1, frac)) * 10)
-  return '█'.repeat(n) + '─'.repeat(10 - n)
-}
 function dots(): string {
   return '●'.repeat(state === 'finished' ? ROUTINE.length : step) + '○'.repeat(ROUTINE.length - (state === 'finished' ? ROUTINE.length : step))
 }
@@ -299,7 +296,7 @@ setInterval(() => {
     const secsLeft = Math.ceil((HOLD_MS - heldMs) / 1000)
     const ex = exercise()
     if (!JA) {
-      setText('side', `${arrowOf(ex)} ${ex.label}\n${ex.hint}\n\n${bar(progress)} ${secsLeft}s`)
+      setText('side', `${arrowOf(ex)} ${ex.label}\n${ex.hint}\n\n${secsLeft}s`)
     }
     if (heldMs >= HOLD_MS) {
       state = 'flash'
@@ -314,6 +311,12 @@ setInterval(() => {
 
   const { u, v } = gaugePosition()
   const target = state === 'exercise' || state === 'flash' ? targetOf(exercise()) : undefined
+
+  if (AUTO && state === 'exercise' && target) {
+    const wobble = Math.sin(now / 700) * 0.03
+    tracker.feedSimulated(target.u + wobble, target.v + wobble, target.u + wobble)
+  }
+
   pushGauge(u, v, target, progress, state === 'flash')
 
   // JA side image: throttle to ~3 fps; static states only on change.
@@ -327,7 +330,6 @@ setInterval(() => {
           title: exLabel(ex),
           hint: exHint(ex),
           arrow: arrowOf(ex),
-          progress,
           secondsLeft: secsLeft,
           flash: state === 'flash',
         }),

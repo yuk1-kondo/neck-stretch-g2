@@ -53,32 +53,52 @@ export async function renderGauge(opts: {
   gctx.arc(cx, cy, 2, 0, Math.PI * 2)
   gctx.fill()
 
+  let inTarget = false
   if (target) {
     const tx = cx + target.u * scale
     const ty = cy - target.v * scale
     const tr = target.r * scale
+    inTarget = Math.hypot(u - target.u, v - target.v) <= target.r
 
-    gctx.strokeStyle = flash ? '#ffffff' : '#aaaaaa'
-    gctx.lineWidth = flash ? 4 : 2
+    // faint guide ring (the "track")
+    gctx.strokeStyle = '#3a3a3a'
+    gctx.lineWidth = 2
     gctx.beginPath()
     gctx.arc(tx, ty, tr, 0, Math.PI * 2)
     gctx.stroke()
 
+    // progress arc rides on the ring itself — thick, charging clockwise
     if (progress > 0) {
       gctx.strokeStyle = '#ffffff'
-      gctx.lineWidth = 4
+      gctx.lineWidth = 6
+      gctx.lineCap = 'round'
       gctx.beginPath()
-      gctx.arc(tx, ty, tr + 5, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2)
+      gctx.arc(tx, ty, tr, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2)
+      gctx.stroke()
+      gctx.lineCap = 'butt'
+    }
+
+    if (flash) {
+      gctx.strokeStyle = '#ffffff'
+      gctx.lineWidth = 3
+      gctx.beginPath()
+      gctx.arc(tx, ty, tr + 10, 0, Math.PI * 2)
       gctx.stroke()
     }
   }
 
-  // head dot (clamped just inside the frame)
+  // head dot (clamped just inside the frame); swells + glows while holding
   const dx = Math.max(6, Math.min(GAUGE_W - 6, cx + u * scale))
   const dy = Math.max(6, Math.min(GAUGE_H - 6, cy - v * scale))
+  if (inTarget && progress > 0) {
+    gctx.fillStyle = '#666666'
+    gctx.beginPath()
+    gctx.arc(dx, dy, 8, 0, Math.PI * 2)
+    gctx.fill()
+  }
   gctx.fillStyle = calibrated ? '#ffffff' : '#777777'
   gctx.beginPath()
-  gctx.arc(dx, dy, 5, 0, Math.PI * 2)
+  gctx.arc(dx, dy, inTarget ? 6 : 5, 0, Math.PI * 2)
   gctx.fill()
 
   return toPng(gaugeCanvas)
@@ -100,11 +120,10 @@ export async function renderSideJa(opts: {
   title: string
   hint: string
   arrow: string
-  progress: number // 0..1
   secondsLeft: number
   flash: boolean
 }): Promise<Uint8Array> {
-  const { title, hint, arrow, progress, secondsLeft, flash } = opts
+  const { title, hint, arrow, secondsLeft, flash } = opts
   sctx.clearRect(0, 0, SIDE_W, SIDE_H)
 
   sctx.textBaseline = 'top'
@@ -117,22 +136,14 @@ export async function renderSideJa(opts: {
   sctx.font = `17px ${JP_FONT}`
   sctx.fillText(hint, 0, 40)
 
-  // direction cue + hold progress
+  // direction cue + countdown (progress lives on the target ring)
   sctx.fillStyle = '#888888'
   sctx.font = `16px ${JP_FONT}`
   sctx.fillText(flash ? '★ クリア!' : `${arrow} の方向へ`, 0, 72)
 
-  // progress bar + countdown
-  const bw = SIDE_W - 70
-  sctx.strokeStyle = '#555555'
-  sctx.lineWidth = 1
-  sctx.strokeRect(0.5, 100.5, bw, 14)
-  sctx.fillStyle = '#ffffff'
-  sctx.fillRect(2, 102, Math.max(0, (bw - 4) * progress), 10)
   sctx.fillStyle = '#cccccc'
-  sctx.font = `15px ${JP_FONT}`
-  sctx.textAlign = 'right'
-  sctx.fillText(`${secondsLeft}秒`, SIDE_W - 2, 99)
+  sctx.font = `bold 26px ${JP_FONT}`
+  sctx.fillText(flash ? '' : `あと ${secondsLeft} 秒`, 0, 96)
 
   // mini controls at the bottom of the panel
   sctx.fillStyle = '#777777'
